@@ -24,7 +24,7 @@ from torch.utils.tensorboard import SummaryWriter
 writer = SummaryWriter("runs/PrioriDoubleDQN")
 
 torch.manual_seed(595)
-MY_MODEL = 'Double_Priori_10000epochs_32batch__LinearEpsDecay_10000memory.pth'
+MY_MODEL = 'Double_Priori_10000epochs_32batch__EpsDecay9997_10000memory.pth'
 
 N_EPISODES = 100000
 BATCH_SIZE = 32
