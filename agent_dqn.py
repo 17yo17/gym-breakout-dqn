@@ -20,6 +20,10 @@ from collections import namedtuple
 from itertools import count
 from torch.utils.tensorboard import SummaryWriter
 
+PATH = '/Users/ryotaono/Downloads/cs696-project3/checkpoint_14999.pth'
+
+checkpoint = torch.load(PATH, weights_only=True)
+
 # Set up TensorBoard writer
 writer = SummaryWriter("runs/PrioriDoubleDQN")
 
@@ -150,7 +154,7 @@ class Agent_DQN(Agent):
             ###########################
             # YOUR IMPLEMENTATION HERE #
             try:
-                self.Q_net.load_state_dict(torch.load('/Users/ryotaono/Downloads/cs696-project3/Double_Priori_10000epochs_32batch__LinearEpsDecay_10000memory.pth', weights_only=True))
+                self.Q_net.load_state_dict(checkpoint['model_state_dict'])
                 self.Q_net.eval()
             except:
                 print("Didn't Work!!")
@@ -334,7 +338,8 @@ class Agent_DQN(Agent):
                     break
 
                 # Update target network
-                self.update_target_network()        
+                if self.steps_done % TARGET_UPDATE_FREQ == 0:
+                    self.update_target_network()        
             
             # Log total reward to TensorBoard
             writer.add_scalar("Total Reward", total_reward, i)
@@ -348,8 +353,8 @@ class Agent_DQN(Agent):
                 self.save_checkpoint(self.Q_net, self.optimizer, i, filename=f"checkpoint_{i}.pth")
 
             # Update epsilon linearly (max - min) / n_episodes
-            #self.epsilon = max(EPS_END, self.epsilon - (EPS_START - EPS_END) / N_EPISODES)
-            self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
+            self.epsilon = max(EPS_END, self.epsilon - (EPS_START - EPS_END) / N_EPISODES)
+            #self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
 
         torch.save(self.Q_net.state_dict(), MY_MODEL)
         writer.flush()
