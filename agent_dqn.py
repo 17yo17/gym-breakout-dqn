@@ -326,8 +326,8 @@ class Agent_DQN(Agent):
                 self.replay_buffer()
                 
                 # Update target network periodically
-                if self.steps_done % TARGET_UPDATE_FREQ == 0:
-                    self.update_target_network()
+                #if self.steps_done % TARGET_UPDATE_FREQ == 0:
+                self.update_target_network()
                 
                 total_reward += reward
                 if done:
