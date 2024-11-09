@@ -44,6 +44,15 @@ class DQN(nn.Module):
             nn.LeakyReLU(),
             nn.Linear(512, num_actions)
         )
+
+        # Initialize weights
+        self.apply(self._initialize_weights)
+
+    def _initialize_weights(self, m):
+        if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+            nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='leaky_relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
   
     def forward(self, x):
         """
