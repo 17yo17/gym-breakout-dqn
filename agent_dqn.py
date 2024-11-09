@@ -27,14 +27,14 @@ torch.manual_seed(595)
 MY_MODEL = 'Double_Priori_10000epochs_32batch__EpsDecay9997_10000memory.pth'
 
 N_EPISODES = 100000
-BATCH_SIZE = 32
+BATCH_SIZE = 64
 GAMMA = 0.99
 EPS_START = 1.0
 EPS_END = 0.01
 EPS_DECAY = 0.9997
 TAU = 0.01
 LR = 1e-4
-MEMORY_SIZE = 100000
+MEMORY_SIZE = 1000000
 GRADIENT_CLIP = 5
 TARGET_UPDATE_FREQ = 5000
 CHECKPOINT_FREQ = 5000
@@ -128,16 +128,16 @@ class Agent_DQN(Agent):
         self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
         # Replay Buffer
-#        self.memory = ReplayMemory(MEMORY_SIZE)
-
+        #self.memory = ReplayMemory(MEMORY_SIZE)
         # Prioritized Replay Buffer
         self.memory = PrioritizedReplayBuffer(MEMORY_SIZE)
         
         # Q-Network and Target-Network
         self.Q_net = DQN(n_channels, self.env.action_space.n).to(self.device)
         self.target_net = DQN(n_channels, self.env.action_space.n).to(self.device)
-        self.target_net.load_state_dict(self.Q_net.state_dict())
         self.target_net.eval()
+        self.target_net.load_state_dict(self.Q_net.state_dict())
+        
 
         # Optimizer and Loss function
         self.optimizer = optim.AdamW(self.Q_net.parameters(), lr=LR, amsgrad=True)
@@ -151,10 +151,16 @@ class Agent_DQN(Agent):
             # YOUR IMPLEMENTATION HERE #
             try:
                 self.Q_net.load_state_dict(torch.load('/Users/ryotaono/Downloads/cs696-project3/Double_Priori_10000epochs_32batch__LinearEpsDecay_10000memory.pth', weights_only=True))
-                #print('Loaded pretrained model')
+                self.Q_net.eval()
             except:
                 print("Didn't Work!!")
                 pass
+            #if args.load_checkpoint != False:
+                # load model checkpoint
+                #self.Q_net.load_state_dict(torch.load(f'checkpoints/test{args.load_checkpoint}.pt', map_location=self.device))
+                #self.optimizer = optim.AdamW(self.Q_net.parameters(), lr=LR, amsgrad=True)
+                #self.target_net.load_state_dict(self.Q_net.state_dict())
+                #self.epsilon = 0.01
 
 
     def init_game_setting(self):
@@ -206,7 +212,7 @@ class Agent_DQN(Agent):
         """
         ###########################
         # YOUR IMPLEMENTATION HERE #
-#        self.memory.push(state, action, nextstate, reward)
+        #self.memory.push(state, action, nextstate, reward)
         #error = abs(reward.item())  # Use the reward as a proxy for initial error
         #self.memory.add(Transition(state, action, nextstate, reward), error)
 
@@ -220,7 +226,6 @@ class Agent_DQN(Agent):
         self.memory.add(Transition(state, action, nextstate, reward), error)
         ###########################
         
-        
     def replay_buffer(self):
         """ You can add additional arguments as you need.
         Select batch from buffer.
@@ -230,7 +235,7 @@ class Agent_DQN(Agent):
         if len(self.memory) < BATCH_SIZE:
             return
         # Sample a random batch from the buffer 
-#        transitions = self.memory.sample(BATCH_SIZE)
+        #transitions = self.memory.sample(BATCH_SIZE)
         transitions, indices, weights = self.memory.sample(BATCH_SIZE)
         batch = Transition(*zip(*transitions))
         
@@ -252,7 +257,7 @@ class Agent_DQN(Agent):
         next_state_values = torch.zeros(BATCH_SIZE, device=self.device)
         next_actions = self.Q_net(non_final_next_states).max(1)[1].unsqueeze(1)
         with torch.no_grad():
-#USE            next_state_values[non_final_mask] = self.target_net(non_final_next_states).max(1).values
+            #USE next_state_values[non_final_mask] = self.target_net(non_final_next_states).max(1).values
             next_state_values[non_final_mask] = self.target_net(non_final_next_states).gather(1, next_actions).squeeze(1)
         
         # Compute the expected Q values
@@ -263,7 +268,7 @@ class Agent_DQN(Agent):
         
         # Weighted loss calculation using importance sampling weights
         weights = torch.tensor(weights, device=self.device, dtype=torch.float)
-#        loss = self.loss_fn(state_action_values, expected_state_action_values.unsqueeze(1))
+        #loss = self.loss_fn(state_action_values, expected_state_action_values.unsqueeze(1))
         loss = (weights * self.loss_fn(state_action_values, expected_state_action_values.unsqueeze(1))).mean()
 
         self.optimizer.zero_grad()
@@ -277,7 +282,6 @@ class Agent_DQN(Agent):
         self.total_loss += loss.item()
         ###########################
          
-
     def update_target_network(self):
 
         # Update target network by copying the weights from the Q network
@@ -325,14 +329,13 @@ class Agent_DQN(Agent):
                 state = nextstate
                 self.replay_buffer()
                 
-                # Update target network periodically
-                #if self.steps_done % TARGET_UPDATE_FREQ == 0:
-                self.update_target_network()
-                
                 total_reward += reward
                 if done:
                     break
 
+                # Update target network
+                self.update_target_network()        
+            
             # Log total reward to TensorBoard
             writer.add_scalar("Total Reward", total_reward, i)
             # Print progress every 10 episodes
@@ -346,8 +349,8 @@ class Agent_DQN(Agent):
 
             # Update epsilon linearly (max - min) / n_episodes
             #self.epsilon = max(EPS_END, self.epsilon - (EPS_START - EPS_END) / N_EPISODES)
-            if len(self.memory) > BATCH_SIZE:
-                self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
+            self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
+
         torch.save(self.Q_net.state_dict(), MY_MODEL)
         writer.flush()
         self.env.close()
