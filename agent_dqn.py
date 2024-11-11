@@ -20,31 +20,39 @@ from collections import namedtuple
 from itertools import count
 from torch.utils.tensorboard import SummaryWriter
 
-PATH = '/Users/ryotaono/Downloads/cs696-project3/checkpoint_14999.pth'
-
-checkpoint = torch.load(PATH, weights_only=True)
+# Load the checkpoint
+try:
+    PATH = '/Users/ryotaono/Desktop/Project 3 Code/checkpoint_5000.pth'
+    checkpoint = torch.load(PATH, weights_only=True)
+except:
+    print("Didn't Work!!")
+    pass
 
 # Set up TensorBoard writer
 writer = SummaryWriter("runs/PrioriDoubleDQN")
 
 torch.manual_seed(595)
-MY_MODEL = 'Double_Priori_10000epochs_32batch__EpsDecay9997_10000memory.pth'
+np.random.seed(595)
+random.seed(595)
 
-N_EPISODES = 100000
-BATCH_SIZE = 64
+# Hyperparameters
+N_EPISODES = 10000
+BATCH_SIZE = 32
 GAMMA = 0.99
 EPS_START = 1.0
-EPS_END = 0.01
-EPS_DECAY = 0.9997
+EPS_END = 0.1
+EPS_DECAY = 100000
 TAU = 0.01
 LR = 1e-4
-MEMORY_SIZE = 1000000
+MEMORY_SIZE = 10000
 GRADIENT_CLIP = 5
-TARGET_UPDATE_FREQ = 5000
 CHECKPOINT_FREQ = 5000
+WARMUP_EPISODES = 1000  # Number of episodes over which to linearly increase the LR
+INITIAL_LR = 1e-6       # Initial learning rate for warm-up
 
 Transition = namedtuple('Transition',
                         ('state', 'action', 'next_state', 'reward'))
+
 class PrioritizedReplayBuffer:
     def __init__(self, capacity, alpha=0.6):
         self.capacity = capacity
@@ -84,21 +92,6 @@ class PrioritizedReplayBuffer:
     def __len__(self):
         return len(self.buffer)
         
-class ReplayMemory(object):
-
-    def __init__(self, capacity):
-        self.memory = deque([], maxlen=capacity)
-
-    def push(self, *arg):
-        """Save a transition"""
-        self.memory.append(Transition(*arg))
-
-    def sample(self, batch_size):
-        return random.sample(self.memory, batch_size)
-
-    def __len__(self):
-        return len(self.memory)
-
 class Agent_DQN(Agent):
     def __init__(self, env, args):
         """
@@ -116,35 +109,28 @@ class Agent_DQN(Agent):
         # YOUR IMPLEMENTATION HERE #
         # Initialize parameters for epsilon and beta
         self.epsilon = EPS_START
-        self.epsilon_end = EPS_END
-        self.epsilon_decay = EPS_DECAY
         self.beta = 0.4  # Starting beta for importance sampling
-        self.total_loss = 0
         self.steps_done = 0
 
         # Initialize environment, Q networks, and replay buffer
         self.env = env
         observation = self.env.reset()
         n_channels = len(np.array(observation).transpose(2,0,1))
-        n_actions = self.env.action_space.n
         
         # Use GPU if available
-        self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Replay Buffer
-        #self.memory = ReplayMemory(MEMORY_SIZE)
         # Prioritized Replay Buffer
         self.memory = PrioritizedReplayBuffer(MEMORY_SIZE)
         
         # Q-Network and Target-Network
         self.Q_net = DQN(n_channels, self.env.action_space.n).to(self.device)
         self.target_net = DQN(n_channels, self.env.action_space.n).to(self.device)
-        self.target_net.eval()
         self.target_net.load_state_dict(self.Q_net.state_dict())
-        
+        self.target_net.eval()
 
         # Optimizer and Loss function
-        self.optimizer = optim.AdamW(self.Q_net.parameters(), lr=LR, amsgrad=True)
+        self.optimizer = optim.AdamW(self.Q_net.parameters(), lr=INITIAL_LR, amsgrad=True)
         self.loss_fn = torch.nn.MSELoss()
 
         # Load my model if exists
@@ -165,7 +151,6 @@ class Agent_DQN(Agent):
                 #self.optimizer = optim.AdamW(self.Q_net.parameters(), lr=LR, amsgrad=True)
                 #self.target_net.load_state_dict(self.Q_net.state_dict())
                 #self.epsilon = 0.01
-
 
     def init_game_setting(self):
         """
@@ -201,10 +186,10 @@ class Agent_DQN(Agent):
                 action = self.Q_net(state).max(1).indices.view(1,1)
         else:
             action = torch.tensor([[self.env.action_space.sample()]], device=self.device, dtype=torch.long)
-            
+        
+        action = action.item()
         ###########################
-        #return action.item() # FOr TEST
-        return action # For TRAIN
+        return action
     
     def push(self, state, action, nextstate, reward):
         """ You can add additional arguments as you need. 
@@ -216,12 +201,10 @@ class Agent_DQN(Agent):
         """
         ###########################
         # YOUR IMPLEMENTATION HERE #
-        #self.memory.push(state, action, nextstate, reward)
-        #error = abs(reward.item())  # Use the reward as a proxy for initial error
-        #self.memory.add(Transition(state, action, nextstate, reward), error)
 
         # Use TD error as initial error if available, otherwise default to abs(reward)
         with torch.no_grad():
+            action = torch.tensor([[action]], device=self.device, dtype=torch.long)
             current_q = self.Q_net(state).gather(1, action)
             next_q = self.target_net(nextstate).max(1)[0] if nextstate is not None else 0
             td_error = abs(reward + (GAMMA * next_q) - current_q).item()
@@ -239,7 +222,6 @@ class Agent_DQN(Agent):
         if len(self.memory) < BATCH_SIZE:
             return
         # Sample a random batch from the buffer 
-        #transitions = self.memory.sample(BATCH_SIZE)
         transitions, indices, weights = self.memory.sample(BATCH_SIZE)
         batch = Transition(*zip(*transitions))
         
@@ -256,12 +238,12 @@ class Agent_DQN(Agent):
         # Compute Q-values for current state-action pairs
         state_action_values = self.Q_net(state_batch).gather(1, action_batch)
         state_action_values = state_action_values.float()
+        writer.add_scalar("Q-Values", state_action_values.mean().item(), self.steps_done)
         
         # Double DQN target: use Q_net to select action, target_net to evaluate
         next_state_values = torch.zeros(BATCH_SIZE, device=self.device)
         next_actions = self.Q_net(non_final_next_states).max(1)[1].unsqueeze(1)
         with torch.no_grad():
-            #USE next_state_values[non_final_mask] = self.target_net(non_final_next_states).max(1).values
             next_state_values[non_final_mask] = self.target_net(non_final_next_states).gather(1, next_actions).squeeze(1)
         
         # Compute the expected Q values
@@ -272,7 +254,6 @@ class Agent_DQN(Agent):
         
         # Weighted loss calculation using importance sampling weights
         weights = torch.tensor(weights, device=self.device, dtype=torch.float)
-        #loss = self.loss_fn(state_action_values, expected_state_action_values.unsqueeze(1))
         loss = (weights * self.loss_fn(state_action_values, expected_state_action_values.unsqueeze(1))).mean()
 
         self.optimizer.zero_grad()
@@ -282,8 +263,6 @@ class Agent_DQN(Agent):
 
         # Log the loss to TensorBoard
         writer.add_scalar("Loss", loss.item(), self.steps_done)
-
-        self.total_loss += loss.item()
         ###########################
          
     def update_target_network(self):
@@ -314,37 +293,43 @@ class Agent_DQN(Agent):
         # YOUR IMPLEMENTATION HERE #
         total_reward = 0
         for i in range(N_EPISODES):
-            self.total_loss = 0
             self.beta = min(1.0, self.beta + (1.0 - 0.4) / N_EPISODES)  # Linearly increase beta
+
             state = self.env.reset()
-            # Flatten the state
             state = torch.FloatTensor(state).permute(2, 0, 1).unsqueeze(0).to(self.device)
             
+            # Warm-up: linearly increase learning rate during warm-up episodes
+            if i < WARMUP_EPISODES:
+                current_lr = INITIAL_LR + (LR - INITIAL_LR) * (i / WARMUP_EPISODES)
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] = current_lr
+
             for t in count():
                 self.steps_done += 1
+                
                 action = self.make_action(state, False)
 
-                observation, reward, terminated, truncated, info = self.env.step(action.item())
+                observation, reward, terminated, truncated, info = self.env.step(action)
                 reward = torch.tensor([reward], device=self.device)
                 done = terminated or truncated
                 nextstate = None if terminated else torch.FloatTensor(observation).permute(2, 0, 1).unsqueeze(0).to(self.device)
                     
                 self.push(state, action, nextstate, reward)
                 state = nextstate
+
+                # Perform one step of the optimization (on the target network)
                 self.replay_buffer()
                 
-                total_reward += reward
                 if done:
                     break
 
-                # Update target network
-                if self.steps_done % TARGET_UPDATE_FREQ == 0:
-                    self.update_target_network()        
-            
-            # Log total reward to TensorBoard
-            writer.add_scalar("Total Reward", total_reward, i)
+                # Update target network    
+                self.update_target_network() 
+                total_reward += reward      
+
             # Print progress every 10 episodes
             if (i+1) % 10 == 0:
+                writer.add_scalar("Total Reward", total_reward, i)
                 print(f"Episode {i+1}/{N_EPISODES}, Total Reward: {total_reward}, Epsilon: {self.epsilon:.2f}, Beta: {self.beta:.2f}")
                 total_reward = 0
 
@@ -352,11 +337,12 @@ class Agent_DQN(Agent):
             if (i+1) % CHECKPOINT_FREQ == 0:
                 self.save_checkpoint(self.Q_net, self.optimizer, i, filename=f"checkpoint_{i}.pth")
 
-            # Update epsilon linearly (max - min) / n_episodes
-            self.epsilon = max(EPS_END, self.epsilon - (EPS_START - EPS_END) / N_EPISODES)
-            #self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
+            # Update epsilon linearly 
+            self.epsilon = EPS_END + (EPS_START - EPS_END) * np.exp(-1. * self.steps_done / EPS_DECAY)
+            writer.add_scalar("Epsilon", self.epsilon, i+1)
 
-        torch.save(self.Q_net.state_dict(), MY_MODEL)
+        print("Training completed.")
+        self.save_checkpoint(self.Q_net, self.optimizer, i, f"checkpoint_{i+1}.pth")
         writer.flush()
         self.env.close()
         writer.close()
