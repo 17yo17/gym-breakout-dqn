@@ -11,7 +11,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from agent import Agent
-from dqn_model import DQN
+from dqn_model import DuelingDQN
 """
 you can import any package and define any extra function as you need
 """
@@ -29,7 +29,7 @@ except:
     pass
 
 # Set up TensorBoard writer
-writer = SummaryWriter("runs/PrioriDoubleDQN")
+writer = SummaryWriter("runs/PrioriDuelDQN")
 
 torch.manual_seed(595)
 np.random.seed(595)
@@ -43,12 +43,11 @@ EPS_START = 1.0
 EPS_END = 0.1
 EPS_DECAY = 100000
 TAU = 0.01
-LR = 1e-4
+LR = 1e-5
 MEMORY_SIZE = 10000
-GRADIENT_CLIP = 5
+GRADIENT_CLIP = 1.0
 CHECKPOINT_FREQ = 5000
-WARMUP_EPISODES = 1000  # Number of episodes over which to linearly increase the LR
-INITIAL_LR = 1e-6       # Initial learning rate for warm-up
+TARGET_UPDATE_FREQ = 1000
 
 Transition = namedtuple('Transition',
                         ('state', 'action', 'next_state', 'reward'))
@@ -124,13 +123,13 @@ class Agent_DQN(Agent):
         self.memory = PrioritizedReplayBuffer(MEMORY_SIZE)
         
         # Q-Network and Target-Network
-        self.Q_net = DQN(n_channels, self.env.action_space.n).to(self.device)
-        self.target_net = DQN(n_channels, self.env.action_space.n).to(self.device)
+        self.Q_net = DuelingDQN(n_channels, self.env.action_space.n).to(self.device)
+        self.target_net = DuelingDQN(n_channels, self.env.action_space.n).to(self.device)
         self.target_net.load_state_dict(self.Q_net.state_dict())
         self.target_net.eval()
 
         # Optimizer and Loss function
-        self.optimizer = optim.AdamW(self.Q_net.parameters(), lr=INITIAL_LR, amsgrad=True)
+        self.optimizer = optim.AdamW(self.Q_net.parameters(), lr=LR, amsgrad=True)
         self.loss_fn = torch.nn.MSELoss()
 
         # Load my model if exists
@@ -240,11 +239,10 @@ class Agent_DQN(Agent):
         state_action_values = state_action_values.float()
         writer.add_scalar("Q-Values", state_action_values.mean().item(), self.steps_done)
         
-        # Double DQN target: use Q_net to select action, target_net to evaluate
+        # DQN target: use Q_net to select action, target_net to evaluate
         next_state_values = torch.zeros(BATCH_SIZE, device=self.device)
-        next_actions = self.Q_net(non_final_next_states).max(1)[1].unsqueeze(1)
         with torch.no_grad():
-            next_state_values[non_final_mask] = self.target_net(non_final_next_states).gather(1, next_actions).squeeze(1)
+            next_state_values[non_final_mask] = self.target_net(non_final_next_states).max(1).values
         
         # Compute the expected Q values
         expected_state_action_values = (next_state_values * GAMMA) + reward_batch
@@ -297,16 +295,10 @@ class Agent_DQN(Agent):
 
             state = self.env.reset()
             state = torch.FloatTensor(state).permute(2, 0, 1).unsqueeze(0).to(self.device)
-            
-            # Warm-up: linearly increase learning rate during warm-up episodes
-            if i < WARMUP_EPISODES:
-                current_lr = INITIAL_LR + (LR - INITIAL_LR) * (i / WARMUP_EPISODES)
-                for param_group in self.optimizer.param_groups:
-                    param_group['lr'] = current_lr
 
             for t in count():
                 self.steps_done += 1
-                
+
                 action = self.make_action(state, False)
 
                 observation, reward, terminated, truncated, info = self.env.step(action)
@@ -323,15 +315,14 @@ class Agent_DQN(Agent):
                 if done:
                     break
 
-                # Update target network    
-                self.update_target_network() 
+                # Update target network periodically
+                if self.steps_done % TARGET_UPDATE_FREQ == 0:
+                    self.update_target_network() 
                 total_reward += reward      
 
             # Print progress every 10 episodes
             if (i+1) % 10 == 0:
-                writer.add_scalar("Total Reward", total_reward, i)
                 print(f"Episode {i+1}/{N_EPISODES}, Total Reward: {total_reward}, Epsilon: {self.epsilon:.2f}, Beta: {self.beta:.2f}")
-                total_reward = 0
 
             # Save checkpoint periodically
             if (i+1) % CHECKPOINT_FREQ == 0:
@@ -339,7 +330,10 @@ class Agent_DQN(Agent):
 
             # Update epsilon linearly 
             self.epsilon = EPS_END + (EPS_START - EPS_END) * np.exp(-1. * self.steps_done / EPS_DECAY)
+
+            writer.add_scalar("Total Reward", total_reward, i)
             writer.add_scalar("Epsilon", self.epsilon, i+1)
+            total_reward = 0
 
         print("Training completed.")
         self.save_checkpoint(self.Q_net, self.optimizer, i, f"checkpoint_{i+1}.pth")
